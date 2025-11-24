@@ -7,6 +7,7 @@ import {Test, console2} from "lib/forge-std/src/Test.sol";
 import {DSCEngine} from "src/DSCEngine.sol";
 import {DecentralizedStableCoin} from "src/DecentralizedStableCoin.sol";
 import {ERC20Mock} from "lib/openzeppelin-contracts/contracts/mocks/token/ERC20Mock.sol";
+import {MockV3Aggregator} from "test/mocks/MockV3Aggregator.sol";
 
 contract Handler is Test {
     DSCEngine dscEngine;
@@ -17,6 +18,7 @@ contract Handler is Test {
 
     uint256 public timesMintIsCalled;
     address[] public usersWithCollateralDeposited;
+    MockV3Aggregator public ethUsdPriceFeed;
 
     uint256 MAX_DEPOSIT_SIZE = type(uint96).max;
 
@@ -27,11 +29,11 @@ contract Handler is Test {
         address[] memory collateralTokens = dscEngine.getCollateralTokens();
         weth = ERC20Mock(collateralTokens[0]);
         wbtc = ERC20Mock(collateralTokens[1]);
+
+        ethUsdPriceFeed = MockV3Aggregator(dscEngine.getCollateralTokenPriceFeed(address(weth)));
     }
 
     function mintDsc(uint256 amount, uint256 addressSeed) public {
-        console2.log("usersWithCollateralDeposited length in mintDsc:", usersWithCollateralDeposited.length);
-
         if (usersWithCollateralDeposited.length == 0) {
             return; //if no address has desposited via our tracked array, we return
         }
@@ -40,11 +42,14 @@ contract Handler is Test {
 
         (uint256 totalDscMinted, uint256 collateralValueInUsd) = dscEngine.getAccountInformation(sender);
 
-        uint256 maxDscToMint = (collateralValueInUsd / 2) - totalDscMinted;
+        int256 maxDscToMint = (int256(collateralValueInUsd / 2)) - int256(totalDscMinted);
+
         if (maxDscToMint < 0) {
             return; //if negative dsc to mint then we return
         }
-        amount = bound(amount, 0, maxDscToMint);
+        amount = bound(amount, 0, uint256(maxDscToMint));
+        console2.log("amount DSC to mint:", amount);
+
         if (amount == 0) {
             return; //if fuzz test choose to mint zero then we return
         }
@@ -75,7 +80,6 @@ contract Handler is Test {
         vm.stopPrank();
 
         usersWithCollateralDeposited.push(msg.sender); //might double push if same addresses is used twice
-        console2.log("usersWithCollateralDeposited length after push:", usersWithCollateralDeposited.length);
     }
 
     function redeemCollateral(uint256 collateralSeed, uint256 amountCollateral) public {
@@ -91,6 +95,11 @@ contract Handler is Test {
         vm.stopPrank();
     }
 
+    function updateCollateralPrice(uint96 newPrice) public {
+        int256 newPriceInt = int256(uint256(newPrice)); //convert as updateAnswer() takes int256
+        ethUsdPriceFeed.updateAnswer(newPriceInt);
+    }
+
     // Helper functions
     // Function to random choose between 2 allowed collateral types
     function _getCollateralFromSeed(uint256 collateralSeed) private view returns (ERC20Mock) {
@@ -98,5 +107,11 @@ contract Handler is Test {
             return weth;
         }
         return wbtc;
+    }
+
+    function callSummary() external view {
+        console2.log("Weth total deposited", weth.balanceOf(address(dscEngine)));
+        console2.log("Wbtc total deposited", wbtc.balanceOf(address(dscEngine)));
+        console2.log("Total supply of DSC", dsc.totalSupply());
     }
 }
